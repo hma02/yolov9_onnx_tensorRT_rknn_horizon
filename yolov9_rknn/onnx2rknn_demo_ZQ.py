@@ -182,7 +182,7 @@ def export_rknn_inference(img):
 
     # Load ONNX model
     print('--> Loading model')
-    ret = rknn.load_onnx(model=ONNX_MODEL, outputs=['output1', 'output2', 'output3', 'output4', 'output5', 'output6'])
+    ret = rknn.load_onnx(model=ONNX_MODEL, outputs=['output0', '1598'])
     if ret != 0:
         print('Load model failed!')
         exit(ret)
