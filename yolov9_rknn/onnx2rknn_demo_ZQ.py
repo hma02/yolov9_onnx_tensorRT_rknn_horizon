@@ -8,8 +8,8 @@ import cv2
 from rknn.api import RKNN
 from math import exp
 
-ONNX_MODEL = './yolov9_relu_80class_zq.onnx'
-RKNN_MODEL = './yolov9_relu_80class_zq.rknn'
+ONNX_MODEL = './best.onnx'
+RKNN_MODEL = './best.rknn'
 DATASET = './dataset.txt'
 
 QUANTIZE_ON = True
@@ -22,7 +22,7 @@ CLASSES = ['person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train',
          'sandwich', 'orange', 'broccoli', 'carrot', 'hot dog', 'pizza', 'donut', 'cake', 'chair', 'couch',
          'potted plant', 'bed', 'dining table', 'toilet', 'tv', 'laptop', 'mouse', 'remote', 'keyboard', 'cell phone',
          'microwave', 'oven', 'toaster', 'sink', 'refrigerator', 'book', 'clock', 'vase', 'scissors', 'teddy bear',
-         'hair drier', 'toothbrush']
+         'hair drier', 'toothbrush', 'face']
 
 meshgrid = []
 
