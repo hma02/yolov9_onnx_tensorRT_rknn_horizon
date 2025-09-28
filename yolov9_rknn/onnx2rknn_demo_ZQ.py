@@ -24,17 +24,20 @@ CLASSES = ['person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train',
          'microwave', 'oven', 'toaster', 'sink', 'refrigerator', 'book', 'clock', 'vase', 'scissors', 'teddy bear',
          'hair drier', 'toothbrush', 'face']
 
-meshgrid = []
-
 class_num = len(CLASSES)
-headNum = 3
-strides = [8, 16, 32]
-mapSize = [[80, 80], [40, 40], [20, 20]]
-nmsThresh = 0.5
-objectThresh = 0.5
+
+meshgrid = []
 
 input_imgH = 320
 input_imgW = 320
+
+headNum = 3
+strides = [8, 16, 32]
+mapSize = [[input_imgH // s, input_imgW // s] for s in strides]
+# mapSize = [[80, 80], [40, 40], [20, 20]]
+nmsThresh = 0.5
+objectThresh = 0.5
+
 
 
 class DetectBox:
