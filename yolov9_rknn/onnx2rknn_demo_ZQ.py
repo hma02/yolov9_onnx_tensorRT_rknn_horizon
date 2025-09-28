@@ -110,69 +110,141 @@ def sigmoid(x):
     return 1 / (1 + exp(-x))
 
 
-def postprocess(out, img_h, img_w):
-    print('postprocess ... ')
+def postprocess(outputs, img_h, img_w):
+    """
+    Generic postprocess that supports:
+      - ONNX/RKNN outputs shaped (1, C, N) where C==85 (standard YOLO: 4+1+80)
+      - Dual-output (two tensors) where either contains the full detection tensor
+    Returns: list of DetectBox after NMS
+    """
+    print('postprocess ...')
 
-    detectResult = []
-    output = []
-    for i in range(len(out)):
-        output.append(out[i].reshape((-1)))
+    # choose a tensor to decode:
+    # outputs is list of numpy arrays; each output from rknn.inference is typically (1, C, N)
+    # find the first output with channels >= 6 (sane)
+    chosen = None
+    for out in outputs:
+        arr = np.array(out)
+        if arr.ndim == 3 and arr.shape[0] == 1:
+            _, C, N = arr.shape
+            if C >= 6:
+                chosen = arr  # shape (1, C, N)
+                break
+    if chosen is None:
+        # fallback: use first output
+        chosen = np.array(outputs[0])
 
-    scale_h = img_h / input_imgH
-    scale_w = img_w / input_imgW
+    # reshape to (C, N)
+    chosen = chosen.reshape(chosen.shape[1], chosen.shape[2])
 
-    gridIndex = -2
+    C, N = chosen.shape
+    # expected C == 85 for COCO-style model (4 bbox + 1 obj + num_classes)
+    print(f"Decoding output with channels={C}, grid_points={N}")
 
-    for index in range(headNum):
-        reg = output[index * 2 + 0]
-        cls = output[index * 2 + 1]
+    # compute grid sizes and strides (we already have mapSize & strides globals)
+    # compute per-scale counts
+    grid_counts = [mapSize[i][0] * mapSize[i][1] for i in range(headNum)]
+    total_grid = sum(grid_counts)
+    assert N == total_grid, f"Mismatch: N({N}) != total_grid({total_grid})"
 
-        for h in range(mapSize[index][0]):
-            for w in range(mapSize[index][1]):
-                gridIndex += 2
+    # prepare meshgrid centers (should already exist)
+    # meshgrid is list [x0,y0, x1,y1, ...], length = total_grid*2
+    # convert into arrays of grid_x, grid_y length N
+    gx = np.array(meshgrid[0::2])   # x centers
+    gy = np.array(meshgrid[1::2])   # y centers
 
-                for cl in range(class_num):
-                    cls_val = sigmoid(cls[cl * mapSize[index][0] * mapSize[index][1] + h * mapSize[index][1] + w])
+    detect_results = []
 
-                    if cls_val > objectThresh:
-                        regdfl = []
-                        for lc in range(4):
-                            sfsum = 0
-                            locval = 0
-                            for df in range(16):
-                                temp = exp(reg[((lc * 16) + df) * mapSize[index][0] * mapSize[index][1] + h * mapSize[index][1] + w])
-                                reg[((lc * 16) + df) * mapSize[index][0] * mapSize[index][1] + h * mapSize[index][1] + w] = temp
-                                sfsum += temp
+    # If model follows standard layout:
+    # per cell: [tx, ty, tw, th, obj, cls0, cls1, ...]
+    if C >= (5 + class_num):
+        # split channels
+        tx = chosen[0, :]     # shape (N,)
+        ty = chosen[1, :]
+        tw = chosen[2, :]
+        th = chosen[3, :]
+        tobj = chosen[4, :]
+        tcls = chosen[5:5 + class_num, :]  # shape (class_num, N)
 
-                            for df in range(16):
-                                sfval = reg[((lc * 16) + df) * mapSize[index][0] * mapSize[index][1] + h * mapSize[index][1] + w] / sfsum
-                                locval += sfval * df
-                            regdfl.append(locval)
+        # apply sigmoid to tx,ty and objectness and class logits
+        px = sigmoid_np(tx)
+        py = sigmoid_np(ty)
+        pobj = sigmoid_np(tobj)
+        pcls = sigmoid_np(tcls)  # or softmax depending on export; sigmoid is common for multi-label/prob
 
-                        x1 = (meshgrid[gridIndex + 0] - regdfl[0]) * strides[index]
-                        y1 = (meshgrid[gridIndex + 1] - regdfl[1]) * strides[index]
-                        x2 = (meshgrid[gridIndex + 0] + regdfl[2]) * strides[index]
-                        y2 = (meshgrid[gridIndex + 1] + regdfl[3]) * strides[index]
+        # iterate per scale to know proper stride per cell index
+        start = 0
+        for idx in range(headNum):
+            hsize, wsize = mapSize[idx]  # e.g. [40,40]
+            count = hsize * wsize
+            stride = strides[idx]
 
+            end = start + count
+            # slice per-scale arrays
+            sx = px[start:end]
+            sy = py[start:end]
+            sw = tw[start:end]
+            sh = th[start:end]
+            sobj = pobj[start:end]
+            scls = pcls[:, start:end]  # shape (class_num, count)
 
-                        xmin = x1 * scale_w
-                        ymin = y1 * scale_h
-                        xmax = x2 * scale_w
-                        ymax = y2 * scale_h
+            # decode boxes for this scale
+            # cx = (grid_x + sx) * stride
+            # cy = (grid_y + sy) * stride
+            # w = exp(sw) * anchor_w  <-- if anchors used; if exported anchors included differently,
+            # sometimes tw/th are already absolute widths (so you might not need exp())
+            # Here we assume tw/th are log-space like: w = exp(sw) * stride (if no anchors)
+            # Many models normalized w/h differently; check your original exporter. We'll attempt generic:
+            # use w = np.exp(sw) * stride, h = np.exp(sh) * stride
 
-                        xmin = xmin if xmin > 0 else 0
-                        ymin = ymin if ymin > 0 else 0
-                        xmax = xmax if xmax < img_w else img_w
-                        ymax = ymax if ymax < img_h else img_h
+            gx_slice = gx[start:end]
+            gy_slice = gy[start:end]
 
-                        box = DetectBox(cl, cls_val, xmin, ymin, xmax, ymax)
-                        detectResult.append(box)
-    # NMS
-    print('detectResult:', len(detectResult))
-    predBox = NMS(detectResult)
+            bx = (gx_slice + sx) * stride
+            by = (gy_slice + sy) * stride
+            bw = np.exp(sw) * stride
+            bh = np.exp(sh) * stride
 
+            # scale to original image size
+            scale_w = img_w / input_imgW
+            scale_h = img_h / input_imgH
+
+            xmin = (bx - bw / 2.0) * scale_w
+            ymin = (by - bh / 2.0) * scale_h
+            xmax = (bx + bw / 2.0) * scale_w
+            ymax = (by + bh / 2.0) * scale_h
+
+            # clip
+            xmin = np.clip(xmin, 0, img_w)
+            ymin = np.clip(ymin, 0, img_h)
+            xmax = np.clip(xmax, 0, img_w)
+            ymax = np.clip(ymax, 0, img_h)
+
+            # combine score = objectness * class prob (take argmax class)
+            class_probs = sobj * scls  # shape (class_num, count)
+            # For each cell find best class and score
+            best_cls_ids = np.argmax(class_probs, axis=0)
+            best_scores = class_probs[best_cls_ids, np.arange(count)]
+
+            # collect boxes above threshold
+            for i_cell in range(count):
+                if best_scores[i_cell] > objectThresh:
+                    cid = int(best_cls_ids[i_cell])
+                    score = float(best_scores[i_cell])
+                    box = DetectBox(cid, score,
+                                    float(xmin[i_cell]), float(ymin[i_cell]),
+                                    float(xmax[i_cell]), float(ymax[i_cell]))
+                    detect_results.append(box)
+
+            start = end
+
+    else:
+        # The output doesn't match expected 85-channel layout. Fallback: raise informative message.
+        raise RuntimeError(f"Unsupported output channel count: {C}. Need 5+num_classes channels (>= {5+class_num}) or DFL layout.")
+
+    print('detectResult:', len(detect_results))
+    predBox = NMS(detect_results)
     return predBox
-
 
 def export_rknn_inference(img):
     # Create RKNN object
