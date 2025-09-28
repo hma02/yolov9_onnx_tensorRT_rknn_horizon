@@ -33,8 +33,8 @@ mapSize = [[80, 80], [40, 40], [20, 20]]
 nmsThresh = 0.5
 objectThresh = 0.5
 
-input_imgH = 640
-input_imgW = 640
+input_imgH = 320
+input_imgW = 320
 
 
 class DetectBox:
