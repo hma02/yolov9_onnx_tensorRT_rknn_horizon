@@ -174,6 +174,91 @@ def postprocess(out, img_h, img_w):
     return predBox
 
 
+
+def post_process_multipart_yolo(
+    output_list,
+    width,
+    height,
+):
+    anchors = [
+        [(12, 16), (19, 36), (40, 28)],
+        [(36, 75), (76, 55), (72, 146)],
+        [(142, 110), (192, 243), (459, 401)],
+    ]
+
+    stride_map = {0: 8, 1: 16, 2: 32}
+
+    all_boxes = []
+    all_scores = []
+    all_class_ids = []
+
+    for i, output in enumerate(output_list):
+        bs, _, ny, nx = output.shape
+        stride = stride_map[i]
+        anchor_set = anchors[i]
+
+        num_anchors = len(anchor_set)
+        output = output.reshape(bs, num_anchors, 85, ny, nx)
+        output = output.transpose(0, 1, 3, 4, 2)
+        output = output[0]
+
+        for a_idx, (anchor_w, anchor_h) in enumerate(anchor_set):
+            for y in range(ny):
+                for x in range(nx):
+                    pred = output[a_idx, y, x]
+                    class_probs = pred[5:]
+                    class_id = np.argmax(class_probs)
+                    class_conf = class_probs[class_id]
+                    conf = class_conf * pred[4]
+
+                    if conf < 0.4:
+                        continue
+
+                    dx = pred[0]
+                    dy = pred[1]
+                    dw = pred[2]
+                    dh = pred[3]
+
+                    bx = ((dx * 2.0 - 0.5) + x) * stride
+                    by = ((dy * 2.0 - 0.5) + y) * stride
+                    bw = ((dw * 2.0) ** 2) * anchor_w
+                    bh = ((dh * 2.0) ** 2) * anchor_h
+
+                    x1 = max(0, bx - bw / 2)
+                    y1 = max(0, by - bh / 2)
+                    x2 = min(width, bx + bw / 2)
+                    y2 = min(height, by + bh / 2)
+
+                    all_boxes.append([x1, y1, x2, y2])
+                    all_scores.append(conf)
+                    all_class_ids.append(class_id)
+
+    indices = cv2.dnn.NMSBoxes(
+        bboxes=all_boxes,
+        scores=all_scores,
+        score_threshold=0.4,
+        nms_threshold=0.4,
+    )
+
+    results = np.zeros((20, 6), np.float32)
+
+    if len(indices) > 0:
+        for i, idx in enumerate(indices.flatten()[:20]):
+            class_id = all_class_ids[idx]
+            conf = all_scores[idx]
+            x1, y1, x2, y2 = all_boxes[idx]
+            results[i] = [
+                class_id,
+                conf,
+                y1 / height,
+                x1 / width,
+                y2 / height,
+                x2 / width,
+            ]
+
+    return results
+
+
 def export_rknn_inference(img):
     # Create RKNN object
     rknn = RKNN(verbose=False)
@@ -228,6 +313,7 @@ def export_rknn_inference(img):
 if __name__ == '__main__':
     print('This is main ...')
     GenerateMeshgrid()
+    print(meshgrid.shape, meshgrid)
 
     img_path = './test.jpg'
     orig_img = cv2.imread(img_path)
